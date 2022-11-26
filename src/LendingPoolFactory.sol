@@ -1,18 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 pragma solidity 0.8.10;
 
-import {LendingPool} from "./LendingPool.sol";
+// import {LendingPool} from "./LendingPool.sol";
 import {PriceOracle} from "./interface/PriceOracle.sol";
 
-import {Auth, Authority} from "solmate/auth/Auth.sol";
+import {AuthInitializable, Authority} from "./utils/AuthInitializable.sol";
 import {Bytes32AddressLib} from "solmate/utils/Bytes32AddressLib.sol";
+
+import {Clones} from "./utils/Clones.sol";
+import {ILendingPool} from "./interface/ILendingPool.sol";
 
 /// @title Lending Pool Factory
 /// @author Jet Jadeja <jet@pentagon.xyz>
 /// @notice Factory used to deploy isolated lending pools.
-contract LendingPoolFactory is Auth {
+contract LendingPoolFactory is AuthInitializable {
     using Bytes32AddressLib for address;
     using Bytes32AddressLib for bytes32;
+
+    address public immutable lendingPoolImplementation;
+
+    mapping(uint256 => address) private pools;
 
     /*///////////////////////////////////////////////////////////////
                                CONSTRUCTOR
@@ -21,7 +28,14 @@ contract LendingPoolFactory is Auth {
     /// @notice Creates a Vault factory.
     /// @param _owner The owner of the factory.
     /// @param _authority The Authority of the factory.
-    constructor(address _owner, Authority _authority) Auth(_owner, _authority) {}
+    constructor(
+        address _owner,
+        Authority _authority,
+        address _lendingPoolImplementation
+    ) {
+        __Auth_init__(_owner, _authority);
+        lendingPoolImplementation = _lendingPoolImplementation;
+    }
 
     /*///////////////////////////////////////////////////////////////
                            POOL DEPLOYMENT LOGIC
@@ -39,23 +53,36 @@ contract LendingPoolFactory is Auth {
     /// @notice Emitted when a new LendingPool is deployed.
     /// @param pool The newly deployed pool.
     /// @param deployer The address of the LendingPool deployer.
-    event PoolDeployed(uint256 indexed id, LendingPool indexed pool, address indexed deployer);
+    event PoolDeployed(
+        uint256 indexed id,
+        address indexed pool,
+        address indexed deployer
+    );
 
     /// @notice Deploy a new Lending Pool.
     /// @return pool The address of the newly deployed pool.
-    function deployLendingPool(string memory name) external returns (LendingPool pool, uint256 index) {
+    function deployLendingPool(string memory name)
+        external
+        returns (address pool, uint256 index)
+    {
         // Calculate pool ID.
-        
+
         // Unchecked is safe here because index will never reach type(uint256).max
-        unchecked { index = poolNumber + 1; }
+        unchecked {
+            index = poolNumber + 1;
+        }
 
         // Update state variables.
         poolNumber = index;
         poolDeploymentName = name;
 
         // Deploy the LendingPool using the CREATE2 opcode.
-        pool = new LendingPool{salt: bytes32(index)}();
+        //pool = new LendingPool{salt: bytes32(index)}();
+        pool = Clones.clone(lendingPoolImplementation);
 
+        pools[index] = pool;
+
+        ILendingPool(pool).initializer();
         // Emit the event.
         emit PoolDeployed(index, pool, msg.sender);
 
@@ -68,29 +95,12 @@ contract LendingPoolFactory is Auth {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Get the address of a pool given its ID.
-    function getPoolFromNumber(uint256 id) external view returns (LendingPool pool) {
+    function getPoolFromNumber(uint256 id)
+        external
+        view
+        returns (address pool)
+    {
         // Retrieve the lending pool.
-        return
-            LendingPool(
-                payable(
-                    keccak256(
-                        abi.encodePacked(
-                            // Prefix:
-                            bytes1(0xFF),
-                            // Creator:
-                            address(this),
-                            // Salt:
-                            bytes32(id),
-                            // Bytecode hash:
-                            keccak256(
-                                abi.encodePacked(
-                                    // Deployment bytecode:
-                                    type(LendingPool).creationCode
-                                )
-                            )
-                        )
-                    ).fromLast20Bytes() // Convert the CREATE2 hash into an address.
-                )
-            );
+        return payable(pools[id]);
     }
 }
